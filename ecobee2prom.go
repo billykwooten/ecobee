@@ -36,8 +36,11 @@ func (d descs) new(fqName, help string, variableLabels []string) *prometheus.Des
 type Collector struct {
 	client *ecobee.Client
 
-	// descriptors
-	fetchTime, temperature *prometheus.Desc
+	// per-query descriptors
+	fetchTime *prometheus.Desc
+
+	// per-sensor descriptors
+	temperature, humidity, occupancy, inUse *prometheus.Desc
 }
 
 func NewCollector(c *ecobee.Client, metricPrefix string) *Collector {
@@ -52,20 +55,33 @@ func NewCollector(c *ecobee.Client, metricPrefix string) *Collector {
 		),
 		temperature: d.new(
 			"temperature",
-			"temperature reported by a sensor",
+			"temperature reported by a sensor in degrees",
+			fields,
+		),
+		humidity: d.new(
+			"humidity",
+			"humidity reported by a sensor in percent",
+			fields,
+		),
+		occupancy: d.new(
+			"occupancy",
+			"occupancy reported by a sensor (0 or 1)",
+			fields,
+		),
+		inUse: d.new(
+			"in_use",
+			"is sensor being used in thermostat calculations (0 or 1)",
 			fields,
 		),
 	}
 }
 
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
-	glog.Info("desc")
 	ch <- c.fetchTime
 	ch <- c.temperature
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
-	glog.Info("collect")
 	start := time.Now()
 	tt, err := c.client.GetThermostats(ecobee.Selection{
 		SelectionType:  "registered",
@@ -79,20 +95,45 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	for _, t := range tt {
 		tFields := []string{t.Identifier, t.Name}
-		fmt.Println(t.Name, t.Identifier)
 		for _, s := range t.RemoteSensors {
-			fmt.Println("S", s.Name, s.ID, s.InUse)
 			sFields := append(tFields, s.ID, s.Name, s.Type)
+			inUse := float64(0)
+			if s.InUse {
+				inUse = 1
+			}
+			ch <- prometheus.MustNewConstMetric(
+				c.inUse, prometheus.GaugeValue, inUse, sFields...,
+			)
 			for _, sc := range s.Capability {
-				fmt.Println("SC", sc.Type, sc.Value)
 				switch sc.Type {
 				case "temperature":
 					if v, err := strconv.ParseFloat(sc.Value, 64); err == nil {
 						ch <- prometheus.MustNewConstMetric(
-							c.temperature, prometheus.GaugeValue, v, sFields...,
+							c.temperature, prometheus.GaugeValue, v/10, sFields...,
 						)
 					} else {
 						glog.Error(err)
+					}
+				case "humidity":
+					if v, err := strconv.ParseFloat(sc.Value, 64); err == nil {
+						ch <- prometheus.MustNewConstMetric(
+							c.humidity, prometheus.GaugeValue, v, sFields...,
+						)
+					} else {
+						glog.Error(err)
+					}
+				case "occupancy":
+					switch sc.Value {
+					case "true":
+						ch <- prometheus.MustNewConstMetric(
+							c.occupancy, prometheus.GaugeValue, 1, sFields...,
+						)
+					case "false":
+						ch <- prometheus.MustNewConstMetric(
+							c.occupancy, prometheus.GaugeValue, 0, sFields...,
+						)
+					default:
+						glog.Errorf("unknown sensor occupancy value %q", sc.Value)
 					}
 				default:
 					glog.Infof("ignoring sensor capability %q", sc.Type)
