@@ -20,6 +20,7 @@ var (
 )
 
 func main() {
+	defer glog.Flush()
 	flag.Parse()
 	ecobee.Scopes = []string{"smartRead"}
 	prometheus.MustRegister(NewCollector(ecobee.NewClient(*appID, *cacheFile), "ecobee"))
