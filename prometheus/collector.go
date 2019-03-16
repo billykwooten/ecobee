@@ -24,42 +24,70 @@ type Collector struct {
 	// per-query descriptors
 	fetchTime *prometheus.Desc
 
-	// per-sensor descriptors
+	// runtime descriptors
+	actualTemperature, targetTemperatureMin, targetTemperatureMax *prometheus.Desc
+
+	// sensor descriptors
 	temperature, humidity, occupancy, inUse *prometheus.Desc
 }
 
-// New returns a new Collector with the given prefix assigned to all
+// NewCollector returns a new Collector with the given prefix assigned to all
 // metrics. Note that Prometheus metrics must be unique! Don't try to create
 // two Collectors with the same metric prefix.
 func NewCollector(c *ecobee.Client, metricPrefix string) *Collector {
 	d := descs(metricPrefix)
-	fields := []string{"thermostat_id", "thermostat_name", "sensor_id", "sensor_name", "sensor_type"}
+
+	// fields common across multiple metrics
+	runtime := []string{"thermostat_id", "thermostat_name"}
+	sensor := append(runtime, "sensor_id", "sensor_name", "sensor_type")
+
 	return &Collector{
 		client: c,
+
+		// collector metrics
 		fetchTime: d.new(
 			"fetch_time",
 			"elapsed time fetching data via Ecobee API",
 			nil,
 		),
+
+		// thermostat (aka runtime) metrics
+		actualTemperature: d.new(
+			"actual_temperature",
+			"thermostat-averaged current temperature",
+			runtime,
+		),
+		targetTemperatureMax: d.new(
+			"target_temperature_max",
+			"maximum temperature for thermostat to maintain",
+			runtime,
+		),
+		targetTemperatureMin: d.new(
+			"target_temperature_min",
+			"minimum temperature for thermostat to maintain",
+			runtime,
+		),
+
+		// sensor metrics
 		temperature: d.new(
 			"temperature",
 			"temperature reported by a sensor in degrees",
-			fields,
+			sensor,
 		),
 		humidity: d.new(
 			"humidity",
 			"humidity reported by a sensor in percent",
-			fields,
+			sensor,
 		),
 		occupancy: d.new(
 			"occupancy",
 			"occupancy reported by a sensor (0 or 1)",
-			fields,
+			sensor,
 		),
 		inUse: d.new(
 			"in_use",
 			"is sensor being used in thermostat calculations (0 or 1)",
-			fields,
+			sensor,
 		),
 	}
 }
@@ -67,6 +95,9 @@ func NewCollector(c *ecobee.Client, metricPrefix string) *Collector {
 // Describe dumps all metric descriptors into ch.
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fetchTime
+	ch <- c.actualTemperature
+	ch <- c.targetTemperatureMax
+	ch <- c.targetTemperatureMin
 	ch <- c.temperature
 	ch <- c.humidity
 	ch <- c.occupancy
@@ -79,6 +110,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	tt, err := c.client.GetThermostats(ecobee.Selection{
 		SelectionType:  "registered",
 		IncludeSensors: true,
+		IncludeRuntime: true,
 	})
 	elapsed := time.Now().Sub(start)
 	ch <- prometheus.MustNewConstMetric(c.fetchTime, prometheus.GaugeValue, elapsed.Seconds())
@@ -88,6 +120,17 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	for _, t := range tt {
 		tFields := []string{t.Identifier, t.Name}
+		if t.Runtime.Connected {
+			ch <- prometheus.MustNewConstMetric(
+				c.actualTemperature, prometheus.GaugeValue, float64(t.Runtime.ActualTemperature)/10, tFields...,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.targetTemperatureMax, prometheus.GaugeValue, float64(t.Runtime.DesiredCool)/10, tFields...,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.targetTemperatureMin, prometheus.GaugeValue, float64(t.Runtime.DesiredHeat)/10, tFields...,
+			)
+		}
 		for _, s := range t.RemoteSensors {
 			sFields := append(tFields, s.ID, s.Name, s.Type)
 			inUse := float64(0)
