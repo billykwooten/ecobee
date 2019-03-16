@@ -76,9 +76,13 @@ func NewCollector(c *ecobee.Client, metricPrefix string) *Collector {
 	}
 }
 
+// Describe dumps all metric descriptors into ch.
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.fetchTime
 	ch <- c.temperature
+	ch <- c.humidity
+	ch <- c.occupancy
+	ch <- c.inUse
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
